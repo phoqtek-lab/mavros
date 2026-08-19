@@ -28,6 +28,13 @@ Sends actuator controls to FCU controller.</description>
 
 Send any command via COMMAND_LONG</description>
   </class>
+  <class name="ekf_position_status" type="mavros::plugin::PluginFactoryTemplate&lt;mavros::std_plugins::EkfPositionStatusPlugin&gt;" base_class_type="mavros::plugin::PluginFactory">
+    <description>@brief EKF position status plugin
+@plugin ekf_position_status
+
+Publishes a bounded horizontal-position subset of the ArduPilot-specific
+EKF_STATUS_REPORT message. Read-only.</description>
+  </class>
   <class name="ftp" type="mavros::plugin::PluginFactoryTemplate&lt;mavros::std_plugins::FTPPlugin&gt;" base_class_type="mavros::plugin::PluginFactory">
     <description>@brief FTP plugin.
 @plugin ftp</description>

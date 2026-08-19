@@ -47,6 +47,7 @@ set(msg_files
   msg/ESCStatusItem.msg
   msg/ESCTelemetry.msg
   msg/ESCTelemetryItem.msg
+  msg/EkfPositionStatus.msg
   msg/EstimatorStatus.msg
   msg/ExtendedState.msg
   msg/FileEntry.msg
