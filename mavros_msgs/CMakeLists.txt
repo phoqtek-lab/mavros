@@ -17,6 +17,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(geographic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
@@ -48,7 +49,10 @@ set(msg_files
   msg/ESCTelemetry.msg
   msg/ESCTelemetryItem.msg
   msg/EkfPositionStatus.msg
+  msg/EkfSafetyStatus.msg
+  msg/EkfSourceStatus.msg
   msg/EstimatorStatus.msg
+  msg/ExternalNavInput.msg
   msg/ExtendedState.msg
   msg/FileEntry.msg
   msg/GPSINPUT.msg
@@ -97,6 +101,7 @@ set(msg_files
   msg/RTKBaseline.msg
   msg/RadioStatus.msg
   msg/State.msg
+  msg/SafetyHeartbeatLease.msg
   msg/StatusEvent.msg
   msg/StatusText.msg
   msg/SysStatus.msg
@@ -176,6 +181,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   rcl_interfaces
   geographic_msgs
   geometry_msgs
+  nav_msgs
   sensor_msgs
   std_msgs
 )

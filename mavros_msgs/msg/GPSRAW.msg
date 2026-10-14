@@ -3,6 +3,9 @@
 # <a href="https://mavlink.io/en/messages/common.html#GPS2_RAW">mavlink GPS2_RAW</a> messages.
 
 std_msgs/Header header
+# Raw MAVLink source timestamp in its FC/GPS clock domain. Repeated values
+# mean telemetry is being republished without a new receiver measurement.
+uint64 time_usec
 ## GPS_FIX_TYPE enum
 uint8 GPS_FIX_TYPE_NO_GPS     = 0    # No GPS connected
 uint8 GPS_FIX_TYPE_NO_FIX     = 1    # No position information, GPS is connected

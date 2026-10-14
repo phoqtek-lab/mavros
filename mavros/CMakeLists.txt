@@ -146,6 +146,8 @@ add_library(mavros_plugins SHARED
   src/plugins/command.cpp
   src/plugins/dummy.cpp
   src/plugins/ekf_position_status.cpp
+  src/plugins/ekf_safety.cpp
+  src/plugins/ekf_source.cpp
   src/plugins/ftp.cpp
   src/plugins/geofence.cpp
   src/plugins/global_position.cpp
