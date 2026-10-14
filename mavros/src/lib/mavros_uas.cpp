@@ -31,6 +31,17 @@ using plugin::Plugin;
 using plugin::PluginFactory;
 using utils::enum_value;
 
+namespace
+{
+rclcpp::ExecutorOptions make_executor_options(
+  const rclcpp::NodeOptions & options)
+{
+  rclcpp::ExecutorOptions executor_options;
+  executor_options.context = options.context();
+  return executor_options;
+}
+}  // namespace
+
 UAS::UAS(
   const rclcpp::NodeOptions & options_,
   const std::string & name_,
@@ -40,7 +51,9 @@ UAS::UAS(
   diagnostic_updater(this, 1.0),
   data(),
   tf2_buffer(get_clock(), tf2::Duration(tf2::BUFFER_CORE_DEFAULT_CACHE_TIME)),
-  tf2_listener(tf2_buffer, true),
+  // Timed lookups elsewhere in MAVROS require a dedicated TF listener thread.
+  // The listener's callback group is still bound to this node and its context.
+  tf2_listener(tf2_buffer, this, true),
   tf2_broadcaster(this),
   tf2_static_broadcaster(this),
   source_system(target_system_),
@@ -51,6 +64,7 @@ UAS::UAS(
   base_link_frame_id("base_link"),
   odom_frame_id("odom"),
   map_frame_id("map"),
+  exec(make_executor_options(options_)),
   plugin_factory_loader("mavros", "mavros::plugin::PluginFactory"),
   loaded_plugins{},
   plugin_subscriptions{},
@@ -177,6 +191,31 @@ UAS::UAS(
         source_system, source_component,
         target_system, target_component);
     });
+}
+
+UAS::~UAS()
+{
+  shutdown_plugins();
+  RCLCPP_INFO(get_logger(), "MAVROS UAS destroyed after plugin shutdown");
+}
+
+void UAS::shutdown_plugins()
+{
+  // Stop and join the private executor while its executor object and all
+  // callback targets are still alive.
+  exec_spin_thd.reset();
+
+  // Plugin subscriptions capture shared plugin/UAS pointers. Remove the
+  // callback groups from the now-stopped executor, then clear those captures
+  // before dropping the plugin owners to break the UAS <-> plugin cycle.
+  for (const auto & plugin : loaded_plugins) {
+    auto plugin_node = plugin->get_node();
+    if (plugin_node && plugin_node.get() != this) {
+      exec.remove_node(plugin_node);
+    }
+  }
+  plugin_subscriptions.clear();
+  loaded_plugins.clear();
 }
 
 void UAS::plugin_route(const mavlink_message_t * mmsg, const Framing framing)

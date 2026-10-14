@@ -11,8 +11,13 @@
  * @author Vladimir Ermakov <vooon341@gmail.com>
  */
 
-#include <string>
+#include <pthread.h>
+#include <cerrno>
+#include <csignal>
+#include <cstdio>
 #include <memory>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "mavros/mavros_router.hpp"
@@ -25,10 +30,25 @@
  */
 int main(int argc, char * argv[])
 {
-  rclcpp::init(argc, argv);
-  rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+  sigset_t termination_signals;
+  sigemptyset(&termination_signals);
+  sigaddset(&termination_signals, SIGINT);
+  sigaddset(&termination_signals, SIGTERM);
+  const int mask_result = pthread_sigmask(SIG_BLOCK, &termination_signals, nullptr);
+  if (mask_result != 0) {
+    std::fprintf(stderr, "failed to block ROS termination signals: %d\n", mask_result);
+    return 1;
+  }
+
+  rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
+  auto context = rclcpp::contexts::get_global_default_context();
+  rclcpp::ExecutorOptions executor_options;
+  executor_options.context = context;
+  auto exec = std::make_unique<rclcpp::executors::MultiThreadedExecutor>(
+    executor_options, 2);
 
   rclcpp::NodeOptions options;
+  options.context(context);
   // options.use_intra_process_comms(true);
 
   std::string fcu_url, gcs_url, uas_url;
@@ -36,7 +56,7 @@ int main(int argc, char * argv[])
   int tgt_system = 1, tgt_component = 1;
 
   auto node = std::make_shared<rclcpp::Node>("mavros_node", options);
-  exec.add_node(node);
+  exec->add_node(node);
 
   node->declare_parameter("fcu_url", fcu_url);
   node->declare_parameter("gcs_url", gcs_url);
@@ -63,7 +83,7 @@ int main(int argc, char * argv[])
 
   RCLCPP_INFO(node->get_logger(), "Starting mavros router node");
   auto router_node = std::make_shared<mavros::router::Router>(options, "mavros_router");
-  exec.add_node(router_node);
+  exec->add_node(router_node);
 
   {
     std::vector<rclcpp::Parameter> router_params{};
@@ -83,7 +103,7 @@ int main(int argc, char * argv[])
   auto uas_node = std::make_shared<mavros::uas::UAS>(
     options, "mavros", uas_url, tgt_system,
     tgt_component);
-  exec.add_node(uas_node);
+  exec->add_node(uas_node);
 
   {
     std::vector<rclcpp::Parameter> uas_params{};
@@ -102,7 +122,31 @@ int main(int argc, char * argv[])
     uas_node->set_parameters(uas_params);
   }
 
-  exec.spin();
-  rclcpp::shutdown();
+  std::thread termination_thread([&exec, &termination_signals]() {
+    int received_signal = 0;
+    int wait_result = 0;
+    do {
+      wait_result = sigwait(&termination_signals, &received_signal);
+    } while (wait_result == EINTR);
+    exec->cancel();
+  });
+
+  exec->spin();
+  termination_thread.join();
+  exec->cancel();
+  exec->remove_node(uas_node);
+  exec->remove_node(router_node);
+  exec->remove_node(node);
+  uas_node->shutdown_plugins();
+  uas_node.reset();
+  router_node->shutdown_endpoints();
+  router_node.reset();
+  node.reset();
+  exec.reset();
+
+  if (context->is_valid()) {
+    context->shutdown("MAVROS executor stopped");
+  }
+  context.reset();
   return 0;
 }

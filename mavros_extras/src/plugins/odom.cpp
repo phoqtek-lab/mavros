@@ -16,7 +16,12 @@
  * @{
  */
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "tf2_eigen/tf2_eigen.hpp"
 #include "rcpputils/asserts.hpp"
@@ -25,6 +30,7 @@
 #include "mavros/plugin_filter.hpp"
 
 #include "nav_msgs/msg/odometry.hpp"
+#include "mavros_msgs/msg/external_nav_input.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
 namespace mavros
@@ -81,11 +87,23 @@ public:
     // publishers
     odom_pub = node->create_publisher<nav_msgs::msg::Odometry>("~/in", 10);
 
-    // subscribers
-    odom_sub =
-      node->create_subscription<nav_msgs::msg::Odometry>(
-      "~/out", 1,
-      std::bind(&OdometryPlugin::odom_cb, this, _1));
+    safety_typed_input_enabled = node->declare_parameter<bool>(
+      "safety_typed_input_enabled", false);
+    legacy_odom_input_enabled = node->declare_parameter<bool>(
+      "legacy_odom_input_enabled", true);
+    if (safety_typed_input_enabled && legacy_odom_input_enabled) {
+      throw std::runtime_error(
+        "odometry safety typed input and legacy input cannot both be enabled");
+    }
+    if (safety_typed_input_enabled) {
+      external_nav_sub = node->create_subscription<mavros_msgs::msg::ExternalNavInput>(
+        "~/external_nav_input", 1,
+        std::bind(&OdometryPlugin::external_nav_cb, this, _1));
+    } else if (legacy_odom_input_enabled) {
+      odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
+        "~/out", 1,
+        std::bind(&OdometryPlugin::legacy_odom_cb, this, _1));
+    }
   }
 
   Subscriptions get_subscriptions() override
@@ -98,6 +116,16 @@ public:
 private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub;
+  rclcpp::Subscription<mavros_msgs::msg::ExternalNavInput>::SharedPtr external_nav_sub;
+  bool safety_typed_input_enabled{false};
+  bool legacy_odom_input_enabled{true};
+  std::uint64_t producer_epoch_{0};
+  std::uint8_t reset_counter_{0};
+  std::uint64_t permit_revision_{0};
+  std::array<std::uint8_t, 16> supervisor_boot_id_{};
+  std::vector<std::uint64_t> retired_producer_epochs_;
+  std::uint8_t lineage_rejection_log_count_{0};
+  bool lineage_acceptance_logged_{false};
 
   //!< desired orientation of the fcu odometry message's parent frame
   std::string fcu_odom_parent_id_des;
@@ -239,7 +267,9 @@ private:
    * Message specification: https://mavlink.io/en/messages/common.html#ODOMETRY
    * @param req	received Odometry msg
    */
-  void odom_cb(const nav_msgs::msg::Odometry::SharedPtr odom)
+  void odom_cb(
+    const nav_msgs::msg::Odometry::SharedPtr odom, const std::uint8_t reset_counter = 0,
+    const std::int8_t quality = -1)
   {
     /**
      * Required affine rotations to apply transforms
@@ -314,6 +344,8 @@ private:
 
     /* -*- ODOMETRY msg parser -*- */
     msg.time_usec = get_time_usec(odom->header.stamp);
+    msg.reset_counter = reset_counter;
+    msg.quality = quality;
 
     // [[[cog:
     // for a, b in (('', 'position'), ('v', 'lin_vel')):
@@ -339,6 +371,85 @@ private:
 
     // send ODOMETRY msg
     uas->send_message(msg);
+  }
+
+  void legacy_odom_cb(const nav_msgs::msg::Odometry::SharedPtr odom)
+  {
+    odom_cb(odom);
+  }
+
+  void external_nav_cb(const mavros_msgs::msg::ExternalNavInput::SharedPtr input)
+  {
+    const bool boot_id_zero = std::all_of(
+      input->supervisor_boot_id.begin(), input->supervisor_boot_id.end(),
+      [](const auto value) {return value == 0;});
+    const bool first_lineage = producer_epoch_ == 0;
+    const bool lineage_changed = !first_lineage &&
+      (input->producer_epoch != producer_epoch_ ||
+      input->supervisor_boot_id != supervisor_boot_id_);
+    const bool repeated_reset_handshake = !first_lineage && !lineage_changed &&
+      input->producer_reset && input->reset_counter == reset_counter_;
+
+    if (input->producer_epoch == 0 || input->permit_revision == 0 || boot_id_zero) {
+      RCLCPP_WARN(get_logger(), "rejecting external-nav input with incomplete producer lineage");
+      return;
+    }
+    if ((first_lineage || lineage_changed) && !input->producer_reset) {
+      if (lineage_rejection_log_count_ < 3U) {
+        RCLCPP_WARN_STREAM(
+          get_logger(), "rejecting external-nav lineage without reset handshake: first="
+            << first_lineage << " changed=" << lineage_changed << " reset="
+            << input->producer_reset << " input_epoch=" << input->producer_epoch
+            << " current_epoch=" << producer_epoch_ << " boot_changed="
+            << (input->supervisor_boot_id != supervisor_boot_id_));
+        ++lineage_rejection_log_count_;
+      }
+      return;
+    }
+    if (lineage_changed && std::find(
+        retired_producer_epochs_.begin(), retired_producer_epochs_.end(),
+        input->producer_epoch) != retired_producer_epochs_.end()) {
+      RCLCPP_WARN(get_logger(), "rejecting external-nav input from a retired producer epoch");
+      return;
+    }
+    if (!first_lineage && !lineage_changed && input->producer_reset &&
+      !repeated_reset_handshake)
+    {
+      RCLCPP_WARN(get_logger(), "rejecting inconsistent external-nav reset retry");
+      return;
+    }
+    if (!first_lineage && !lineage_changed && input->permit_revision < permit_revision_) {
+      RCLCPP_WARN(get_logger(), "rejecting external-nav permit revision rollback");
+      return;
+    }
+    if (!lineage_changed && input->reset_counter < reset_counter_) {
+      RCLCPP_WARN(get_logger(), "rejecting external-nav reset counter rollback");
+      return;
+    }
+
+    if (input->producer_reset && !lineage_acceptance_logged_) {
+      RCLCPP_INFO_STREAM(
+        get_logger(), "accepted external-nav reset handshake: epoch="
+          << input->producer_epoch << " permit_revision=" << input->permit_revision
+          << " vio_epoch=" << input->vio_epoch);
+      lineage_acceptance_logged_ = true;
+    }
+
+    if (lineage_changed) {
+      retired_producer_epochs_.push_back(producer_epoch_);
+      constexpr std::size_t max_retired_epochs = 8;
+      if (retired_producer_epochs_.size() > max_retired_epochs) {
+        retired_producer_epochs_.erase(retired_producer_epochs_.begin());
+      }
+      reset_counter_ = 0;
+    }
+    producer_epoch_ = input->producer_epoch;
+    supervisor_boot_id_ = input->supervisor_boot_id;
+    permit_revision_ = input->permit_revision;
+    reset_counter_ = input->reset_counter;
+    odom_cb(
+      std::make_shared<nav_msgs::msg::Odometry>(input->odometry), reset_counter_,
+      input->quality);
   }
 };
 }       // namespace extra_plugins

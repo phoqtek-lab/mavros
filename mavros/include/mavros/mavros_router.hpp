@@ -193,7 +193,10 @@ public:
       });
   }
 
+  ~Router() override;
+
   void route_message(Endpoint::SharedPtr src, const mavlink_message_t * msg, const Framing framing);
+  void shutdown_endpoints();
 
 private:
   friend class Endpoint;

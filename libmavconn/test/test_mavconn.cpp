@@ -20,10 +20,12 @@
 // #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <limits>
 #include <memory>
+#include <thread>
 
 #include "mavconn/interface.hpp"
 #include "mavconn/serial.hpp"
@@ -174,6 +176,37 @@ TEST_F(TCP, send_message)
   send_heartbeat(client.get());
   EXPECT_EQ(wait_one(), true);
   EXPECT_EQ(message_id, msgid);
+}
+
+TEST_F(TCP, client_close_while_rearming_receive)
+{
+  constexpr uint16_t server_port = 57608;
+  constexpr int cycles = 64;
+  auto echo_server = std::make_shared<MAVConnTCPServer>(42, 200, "127.0.0.1", server_port);
+  echo_server->connect(MAVConnInterface::ReceivedCb());
+
+  for (int cycle = 0; cycle < cycles; ++cycle) {
+    std::atomic<bool> received {false};
+    auto client = std::make_shared<MAVConnTCPClient>(44, 200, "127.0.0.1", server_port);
+    client->connect([&received](const mavlink_message_t *, const Framing) {
+      received.store(true, std::memory_order_release);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!received.load(std::memory_order_acquire) &&
+      std::chrono::steady_clock::now() < deadline)
+    {
+      send_heartbeat(echo_server.get());
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(received.load(std::memory_order_acquire))
+      << "loopback TCP client did not receive cycle " << cycle;
+
+    // Closing as the receive callback re-arms async_receive exercises the
+    // socket-operation/close serialization under sustained repetition.
+    std::thread closer([client]() { client->close(); });
+    closer.join();
+  }
 }
 
 TEST_F(TCP, client_reconnect)

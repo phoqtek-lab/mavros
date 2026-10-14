@@ -16,6 +16,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -28,6 +29,7 @@
 #include "mavros/plugin_filter.hpp"
 
 #include "mavros_msgs/msg/state.hpp"
+#include "mavros_msgs/msg/safety_heartbeat_lease.hpp"
 #include "mavros_msgs/msg/sys_status.hpp"
 #include "mavros_msgs/msg/estimator_status.hpp"
 #include "mavros_msgs/msg/extended_state.hpp"
@@ -546,6 +548,15 @@ public:
       });
 
     node_declare_and_watch_parameter(
+      "safety_heartbeat_gate_enabled", false, [&](const rclcpp::Parameter & p) {
+        safety_heartbeat_gate_enabled = p.as_bool();
+        if (!safety_heartbeat_gate_enabled) {
+          std::lock_guard<std::mutex> lock(safety_heartbeat_mutex);
+          safety_heartbeat_seen = false;
+        }
+      });
+
+    node_declare_and_watch_parameter(
       "heartbeat_rate", 1.0, [&](const rclcpp::Parameter & p) {
         auto rate_d = p.as_double();
 
@@ -585,6 +596,9 @@ public:
       std::bind(&SystemStatusPlugin::statustext_cb, this, _1));
     statusevent_pub = node->create_publisher<mavros_msgs::msg::StatusEvent>(
       "status_event", sensor_qos);
+    safety_heartbeat_lease_sub = node->create_subscription<mavros_msgs::msg::SafetyHeartbeatLease>(
+      "safety/heartbeat_lease", rclcpp::QoS(1).reliable(),
+      std::bind(&SystemStatusPlugin::safety_heartbeat_lease_cb, this, _1));
 
     srv_cg = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
@@ -661,6 +675,16 @@ private:
   rclcpp::Publisher<mavros_msgs::msg::StatusText>::SharedPtr statustext_pub;
   rclcpp::Subscription<mavros_msgs::msg::StatusText>::SharedPtr statustext_sub;
   rclcpp::Publisher<mavros_msgs::msg::StatusEvent>::SharedPtr statusevent_pub;
+  rclcpp::Subscription<
+    mavros_msgs::msg::SafetyHeartbeatLease>::SharedPtr safety_heartbeat_lease_sub;
+
+  bool safety_heartbeat_gate_enabled{false};
+  bool safety_heartbeat_seen{false};
+  bool safety_heartbeat_healthy{false};
+  std::uint64_t safety_heartbeat_sequence{0};
+  std::array<std::uint8_t, 16> safety_heartbeat_boot_id{};
+  std::chrono::steady_clock::time_point safety_heartbeat_expiry{};
+  std::mutex safety_heartbeat_mutex;
 
   rclcpp::CallbackGroup::SharedPtr srv_cg;
   rclcpp::Service<mavros_msgs::srv::StreamRate>::SharedPtr stream_rate_srv;
@@ -1284,6 +1308,13 @@ private:
 
   void heartbeat_cb()
   {
+    if (safety_heartbeat_gate_enabled) {
+      std::lock_guard<std::mutex> lock(safety_heartbeat_mutex);
+      if (!safety_heartbeat_seen || !safety_heartbeat_healthy ||
+        std::chrono::steady_clock::now() >= safety_heartbeat_expiry) {
+        return;
+      }
+    }
     using mavlink::common::MAV_MODE;
 
     mavlink::minimal::msg::HEARTBEAT hb {};
@@ -1294,6 +1325,32 @@ private:
     hb.system_status = enum_value(MAV_STATE::ACTIVE);
 
     uas->send_message(hb);
+  }
+
+  void safety_heartbeat_lease_cb(
+    const mavros_msgs::msg::SafetyHeartbeatLease::SharedPtr msg)
+  {
+    if (msg == nullptr || std::all_of(
+        msg->supervisor_boot_id.begin(), msg->supervisor_boot_id.end(),
+        [](const auto value) {return value == 0;})) {
+      return;
+    }
+    const auto ttl = std::chrono::seconds(msg->ttl.sec) +
+      std::chrono::nanoseconds(msg->ttl.nanosec);
+    if (ttl <= std::chrono::milliseconds(0) || ttl > std::chrono::milliseconds(200)) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(safety_heartbeat_mutex);
+    const bool new_boot = !safety_heartbeat_seen ||
+      msg->supervisor_boot_id != safety_heartbeat_boot_id;
+    if (!new_boot && msg->sequence <= safety_heartbeat_sequence) {
+      return;
+    }
+    safety_heartbeat_boot_id = msg->supervisor_boot_id;
+    safety_heartbeat_sequence = msg->sequence;
+    safety_heartbeat_seen = true;
+    safety_heartbeat_healthy = msg->command_loop_healthy;
+    safety_heartbeat_expiry = std::chrono::steady_clock::now() + ttl;
   }
 
   void autopilot_version_cb()

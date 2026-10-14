@@ -272,7 +272,11 @@ void MAVConnTCPClient::send_message(const mavlink::Message & message, const uint
 
 void MAVConnTCPClient::do_recv()
 {
-  if (is_destroying) {
+  // Closing a socket concurrently with initiating async_receive is not
+  // supported by Asio.  Serialize operation registration with close(), which
+  // uses the same mutex, and do not re-arm after the descriptor has closed.
+  lock_guard lock(mutex);
+  if (is_destroying || !is_open()) {
     return;
   }
   auto sthis = shared_from_this();

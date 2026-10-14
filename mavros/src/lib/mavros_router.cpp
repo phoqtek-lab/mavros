@@ -28,6 +28,27 @@ using shared_lock = std::shared_lock<std::shared_timed_mutex>;
 
 std::atomic<id_t> Router::id_counter {1000};
 
+Router::~Router()
+{
+  shutdown_endpoints();
+}
+
+void Router::shutdown_endpoints()
+{
+  std::unordered_map<id_t, Endpoint::SharedPtr> detached_endpoints;
+  {
+    unique_lock lock(mu);
+    detached_endpoints.swap(endpoints);
+  }
+
+  for (auto & entry : detached_endpoints) {
+    const auto & endpoint = entry.second;
+    diagnostic_updater.removeByName(endpoint->diag_name());
+    endpoint->close();
+  }
+  detached_endpoints.clear();
+}
+
 static inline uint8_t get_msg_byte(const mavlink_message_t * msg, uint8_t offset)
 {
   return _MAV_PAYLOAD(msg)[offset];

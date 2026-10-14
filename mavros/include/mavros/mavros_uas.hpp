@@ -260,7 +260,15 @@ public:
     const std::string & uas_url_ = "/uas1", uint8_t target_system_ = 1,
     uint8_t target_component_ = 1);
 
-  ~UAS() = default;
+  ~UAS() override;
+
+  /**
+   * @brief Stop plugin callbacks and release plugin-held references to this UAS.
+   *
+   * Call before releasing the last external UAS reference so callback closures
+   * cannot keep the UAS and its DDS entities alive in an ownership cycle.
+   */
+  void shutdown_plugins();
 
   /**
    * @brief Mavros diagnostic updater
