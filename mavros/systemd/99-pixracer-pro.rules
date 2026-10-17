@@ -1,0 +1,4 @@
+# ZerodragNova-F4 v2 (ArduPilot) - allow non-root access to FC serial ports
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="5741", MODE="0666", GROUP="dialout"
+# Stable symlink to the primary MAVLink CDC interface (bInterfaceNumber 0)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="5741", ENV{ID_USB_INTERFACE_NUM}=="00", SYMLINK+="pixracer"

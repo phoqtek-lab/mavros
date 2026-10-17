@@ -1,0 +1,9 @@
+# Gives the Pixracer Pro MAVLink CDC interface a systemd device unit, so a
+# service can be ordered after the FCU serial port rather than after a timer.
+#
+# 99-pixracer-pro.rules already creates the stable /dev/pixracer symlink and
+# the dialout permissions; this file only adds the systemd alias. SYSTEMD_ALIAS
+# makes systemd materialise dev-pixracer.device, which garudanav-mavros.service
+# binds to: MAVROS starts when the FCU enumerates and stops when it is pulled,
+# instead of spinning on a port that is not there.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="5741", ENV{ID_USB_INTERFACE_NUM}=="00", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/dev/pixracer"

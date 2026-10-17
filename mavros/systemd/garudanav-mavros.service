@@ -1,0 +1,48 @@
+[Unit]
+Description=GarudaNav MAVROS (flight controller link)
+Documentation=https://github.com/phoqtek-lab/mavros
+
+# The "port becomes available" gate. dev-pixracer.device is materialised by
+# 99-pixracer-systemd.rules when the Pixracer Pro MAVLink CDC interface
+# enumerates. BindsTo stops MAVROS when the FCU is unplugged; the matching
+# WantedBy in [Install] starts it when the FCU appears, at boot or later.
+# Without this MAVROS would start at boot, find no serial port, and either die
+# or sit in a restart loop until the FCU happened to show up.
+BindsTo=dev-pixracer.device
+After=dev-pixracer.device
+
+[Service]
+Type=simple
+User=garuda03
+Group=garuda03
+WorkingDirectory=/home/garuda03/garudanav_ws
+
+Environment=ROS_DOMAIN_ID=21
+
+# Mirrors mavros_only.launch.py: the same plugin allowlist, the same node
+# namespace. The deployment params file is layered second so it wins, and it
+# carries the two values the packaged launch files disagree about --
+# mavros_only.launch.py says target_system_id 1 and
+# full_stack_map_estimation_updated.launch.py says 2. The FCU answers as 2;
+# with 1 the VER handshake times out and no plugin ever initialises.
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source /home/garuda03/garudanav_ws/install/setup.bash && exec /home/garuda03/garudanav_ws/install/mavros/lib/mavros/mavros_node --ros-args -r __ns:=/mavros --params-file /home/garuda03/garudanav_ws/install/garudanav_bringup/share/garudanav_bringup/config/mavros_plugins.yaml --params-file /home/garuda03/.config/garudanav/mavros-garuda03.yaml'
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillMode=control-group
+KillSignal=SIGINT
+ExecStop=/bin/kill -KILL $MAINPID
+FinalKillSignal=SIGKILL
+SuccessExitStatus=SIGKILL
+
+StandardOutput=append:/home/garuda03/garudanav_logs/logs/mavros.log
+StandardError=append:/home/garuda03/garudanav_logs/logs/mavros.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=dev-pixracer.device
