@@ -52,9 +52,11 @@ class CommandTransaction
 public:
   uint16_t expected_command;
   std::promise<uint8_t> promise;
+  bool promise_satisfied;
 
   explicit CommandTransaction(uint16_t command)
-  :    expected_command(command)
+  :    expected_command(command),
+    promise_satisfied(false)
   {}
 };
 
@@ -193,6 +195,14 @@ private:
 
     for (auto & tr : ack_waiting_list) {
       if (tr.expected_command == ack.command) {
+        if (tr.promise_satisfied) {
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(),
+            10000, "CMD: Duplicate ack for command %u, result %u",
+            ack.command, ack.result);
+          return;
+        }
+        tr.promise_satisfied = true;
         tr.promise.set_value(ack.result);
         return;
       }
