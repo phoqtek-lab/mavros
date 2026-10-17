@@ -60,7 +60,7 @@ MAVConnInterface::MAVConnInterface(uint8_t system_id, uint8_t component_id)
 
 mavlink_status_t MAVConnInterface::get_status()
 {
-  return m_mavlink_status;
+  return m_parse_status;
 }
 
 MAVConnInterface::IOStat MAVConnInterface::get_iostat()
