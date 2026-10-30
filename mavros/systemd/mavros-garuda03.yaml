@@ -1,0 +1,6 @@
+/**:
+  ros__parameters:
+    fcu_url: "serial:///dev/pixracer:921600"
+    gcs_url: ""
+    target_system_id: 2
+    target_component_id: 1
